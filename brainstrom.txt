@@ -1,0 +1,78 @@
+MOUVEMENT:
+DASH ** en cours...
+SPRINT *** en cours...
+GRAB * en cours...
+DOUBLE JUMP *** en cours...
+WALL JUMP/GRAB? ** en cours...
+ROLL * en cours...
+
+MAIN ATTACK:
+ATTACK LEGER ***
+ATTACK LOURD ***
+ATTACK SPECIAL **
+ATTACK JUMP/DOWN *
+ATTACK GRAB *
+
+Les spécificités de personnages:**
+fly*
+poid * (attack saute down)
+charge *
+
+
+MECANIQUE:
+PORTAIL ***
+GRAVITE/nage **
+ITEM *
+PV (EN %)***
+L'éjection (KO) ***
+Le bouclier***
+ukemi*
+shifting attack **
+fast falling *
+combo attack *** EN COURS ...
+shield poke *
+respawn ***
+timer + vie ***
+GLOW DES PERSONNAGES ***
+
+UI: **
+entre en scene *
+winner *
+selection personnages ***
+selection map ***
+random selection ***
+random portal/ regular *
+changer couleur personnages*
+
+map:
+creation portail 
+
+personnages:
+trouver personnages
+bryan(monstre alien pas moi )/leger ***
+clavier/gunner***
+mixamo:
+Mutant /tank ***
+alien soldier / leger **
+ paragon:wraith/ survivor***
+dummy /base character***
+drake /tank *
+maynard/leger*
+paragon:murdock /gunner ***
+sci-fi toiletmech /tank **
+Paragon: Riktor /tank**
+Paragon: Gadget/survivor **
+whisper /leger **
+paragon:grux/tank**
+paragon:crunch**
+
+classe de personnages:
+tank***
+leger /rapide***
+gunner*
+bonus(clavier)***
+survivor(vol)***
+
+effet niagara:
+niagara exemples pack
+realistic stater vfx pack vol 2
