@@ -1318,7 +1318,7 @@ void USmashGameInstance::HandleInputDeviceConnectionChange(
 	// P4 = index 3
 	// ============================================================
 
-	const int32 NewPlayerIndex = ConnectedPlayers.Num() + 1;
+    const int32 NewPlayerIndex = ConnectedPlayers.Num();
 
 
 	// ============================================================
