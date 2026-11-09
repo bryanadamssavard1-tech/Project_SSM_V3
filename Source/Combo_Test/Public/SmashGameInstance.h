@@ -1,196 +1,107 @@
 #pragma once
 
-// ============================================================
-// INCLUDES
-// ============================================================
-
+// ============================================================================
+// 01 - INCLUDES
+// ============================================================================
 #include "CoreMinimal.h"
 #include "Engine/GameInstance.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
-
 #include "SmashGameInstance.generated.h"
-
-
-// ============================================================
-// FORWARD DECLARATIONS
-// ============================================================
 
 class UTexture2D;
 class UWorld;
+class IInputProcessor;
 struct FSlateBrush;
 
-
-// ============================================================
-// LOADING PLAYER DATA
-// ============================================================
-
+// ============================================================================
+// 02 - LOADING PLAYER DATA (INCHANGE)
+// ============================================================================
 USTRUCT(BlueprintType)
 struct FLoadingPlayerData
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
-	// 0 = P1, 1 = P2, 2 = P3, 3 = P4
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
-	int32 PlayerIndex = 0;
+    UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
+    int32 PlayerIndex = 0;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
-	FString CharacterName;
+    UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
+    FString CharacterName;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
-	UTexture2D* Portrait = nullptr;
+    UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
+    UTexture2D* Portrait = nullptr;
 };
 
-
-// ============================================================
-// LOCAL PLAYER CONNECTION DATA
-//
-// P1 = clavier
-// P2/P3/P4 = manettes physiques
-// ============================================================
-
+// ============================================================================
+// 03 - LOCAL PLAYER DATA (P1-P4 MANETTES (APPUYER SUR A/CROIX))
+// ============================================================================
 USTRUCT(BlueprintType)
 struct FSmashLocalPlayerData
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly, Category = "Local Multiplayer")
-	int32 PlayerIndex = -1;
+    UPROPERTY(BlueprintReadOnly, Category = "Local Multiplayer")
+    int32 PlayerIndex = -1;
 
-	// Identifiant physique de la manette.
-	// Pas de UPROPERTY ici.
-	FInputDeviceId InputDeviceId;
+    FInputDeviceId InputDeviceId;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Local Multiplayer")
-	bool bIsConnected = false;
+    UPROPERTY(BlueprintReadOnly, Category = "Local Multiplayer")
+    bool bIsConnected = false;
 };
 
-
-// ============================================================
-// SMASH GAME INSTANCE
-//
-// Gère :
-// - les connexions/déconnexions de manettes
-// - la création de P2/P3/P4
-// - le routage Device -> PlatformUser -> LocalPlayer
-// - les données du loading screen
-// ============================================================
-
+// ============================================================================
+// 04 - SMASH GAME INSTANCE
+// ============================================================================
 UCLASS()
 class COMBO_TEST_API USmashGameInstance : public UGameInstance
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
 public:
+    // 04A - CYCLE DE VIE
+    virtual void Init() override;
+    virtual void Shutdown() override;
 
-	// ========================================================
-	// INITIALIZATION
-	// ========================================================
+    // 04B - EVENTS BLUEPRINT EXISTANTS
+    UFUNCTION(BlueprintImplementableEvent, Category = "Local Multiplayer")
+    void OnSmashLocalPlayerCreated(int32 PlayerIndex);
 
-	virtual void Init() override;
+    UFUNCTION(BlueprintImplementableEvent, Category = "Local Multiplayer")
+    void OnSmashLocalPlayerConnectionChanged(int32 PlayerIndex, bool bIsConnected);
 
+    // 04C - JOUEURS ET CONNEXIONS
+    TArray<FSmashLocalPlayerData> ConnectedPlayers;
+    UFUNCTION(BlueprintPure, Category = "Smash|Players")
+    TArray<int32> GetConnectedPlayerIndices() const;
+    void HandleInputDeviceConnectionChange(
+        EInputDeviceConnectionState NewConnectionState,
+        FPlatformUserId PlatformUserId,
+        FInputDeviceId InputDeviceId);
 
-	// ========================================================
-	// BLUEPRINT EVENT - LOCAL PLAYER CRÉÉ
-	// ========================================================
+    // Appele quand une manette non attribuee presse A / Croix.
+    void HandleJoinButtonPressed(FInputDeviceId InputDeviceId);
 
-	UFUNCTION(BlueprintImplementableEvent, Category = "Local Multiplayer")
-	void OnSmashLocalPlayerCreated(int32 PlayerIndex);
+    void CreateSmashLocalPlayer(int32 PlayerIndex, FInputDeviceId InputDeviceId);
+    void RouteInputDeviceToLocalPlayer(int32 PlayerIndex, FInputDeviceId InputDeviceId);
 
-	// ========================================================
-// BLUEPRINT EVENT - CONNECTION STATE CHANGED
-//
-// Appelé lorsqu'une manette déjà associée à un joueur
-// est déconnectée ou reconnectée.
-//
-// PlayerIndex :
-// 1 = P2
-// 2 = P3
-// 3 = P4
-//
-// bIsConnected :
-// true  = connecté
-// false = déconnecté
-// ========================================================
+    // 04D - LOADING SCREEN DATA (INCHANGE)
+    UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
+    TArray<FLoadingPlayerData> LoadingPlayers;
 
-	UFUNCTION(BlueprintImplementableEvent, Category = "Local Multiplayer")
-	void OnSmashLocalPlayerConnectionChanged(
-		int32 PlayerIndex,
-		bool bIsConnected
-	);
-	// ========================================================
-	// LOCAL MULTIPLAYER DATA
-	// ========================================================
+    UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
+    UTexture2D* LoadingBackgroundTexture = nullptr;
 
-	TArray<FSmashLocalPlayerData> ConnectedPlayers;
-
-
-	// ========================================================
-	// INPUT DEVICE CONNECTION EVENT
-	// ========================================================
-
-	void HandleInputDeviceConnectionChange(
-		EInputDeviceConnectionState NewConnectionState,
-		FPlatformUserId PlatformUserId,
-		FInputDeviceId InputDeviceId
-	);
-
-
-	// ========================================================
-	// CREATE LOCAL PLAYER
-	//
-	// 1 = P2
-	// 2 = P3
-	// 3 = P4
-	// ========================================================
-
-	void CreateSmashLocalPlayer(
-		int32 PlayerIndex,
-		FInputDeviceId InputDeviceId
-	);
-
-
-	// ========================================================
-	// ROUTE PHYSICAL DEVICE TO LOCAL PLAYER
-	//
-	// Corrige le propriétaire du FInputDeviceId sans modifier
-	// le PlatformUser du LocalPlayer.
-	// ========================================================
-
-	void RouteInputDeviceToLocalPlayer(
-		int32 PlayerIndex,
-		FInputDeviceId InputDeviceId
-	);
-
-
-	// ========================================================
-	// LOADING SCREEN DATA
-	// ========================================================
-
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
-	TArray<FLoadingPlayerData> LoadingPlayers;
-
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
-	UTexture2D* LoadingBackgroundTexture = nullptr;
-
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
-	UTexture2D* CenterSlashTexture = nullptr;
-
+    UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Loading Screen")
+    UTexture2D* CenterSlashTexture = nullptr;
 
 private:
+    // 04E - LOADING SCREEN
+    void BeginLoadingScreen(const FString& MapName);
+    void EndLoadingScreen(UWorld* LoadedWorld);
 
-	// ========================================================
-	// LOADING SCREEN FUNCTIONS
-	// ========================================================
+    TSharedPtr<FSlateBrush> LoadingBackgroundBrush;
+    TSharedPtr<FSlateBrush> CenterSlashBrush;
+    TArray<TSharedPtr<FSlateBrush>> PlayerPortraitBrushes;
 
-	void BeginLoadingScreen(const FString& MapName);
-	void EndLoadingScreen(UWorld* LoadedWorld);
-
-
-	// ========================================================
-	// SLATE BRUSHES
-	// ========================================================
-
-	TSharedPtr<FSlateBrush> LoadingBackgroundBrush;
-	TSharedPtr<FSlateBrush> CenterSlashBrush;
-	TArray<TSharedPtr<FSlateBrush>> PlayerPortraitBrushes;
+    // 04F - DETECTEUR DE BOUTON DES MANETTES NON ATTRIBUEES
+    TSharedPtr<IInputProcessor> JoinInputProcessor;
 };
