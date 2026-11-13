@@ -11,7 +11,13 @@
 // ============================================================================
 
 #include "SmashGameInstance.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "InputCoreTypes.h"
 
+
+
+#include "Input/Events.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "MoviePlayer.h"
 #include "UObject/UObjectGlobals.h"
@@ -37,12 +43,89 @@
 
 
 // ============================================================================
+// JOIN INPUT PREPROCESSOR - DETECTE A / CROIX AVANT L'ATTRIBUTION
+// ============================================================================
+class FSmashJoinInputProcessor final : public IInputProcessor
+{
+public:
+
+    // --------------------------------------------------------
+    // 01.1 - CONSTRUCTEUR
+    // Conserve une référence au GameInstance.
+    // --------------------------------------------------------
+
+    explicit FSmashJoinInputProcessor(
+        USmashGameInstance* InGameInstance
+    )
+        : GameInstance(InGameInstance)
+    {}
+
+    // --------------------------------------------------------
+    // 01.2 - TICK OBLIGATOIRE
+    // Nécessaire pour IInputProcessor dans UE 5.6.
+    // --------------------------------------------------------
+
+    virtual void Tick(
+        const float DeltaTime,
+        FSlateApplication& SlateApp,
+        TSharedRef<ICursor> Cursor
+    ) override
+    {
+        // Aucun traitement nécessaire.
+    }
+
+    // --------------------------------------------------------
+    // 01.3 - DÉTECTION DU BOUTON A / CROIX
+    // Identifie la manette qui demande à rejoindre.
+    // --------------------------------------------------------
+
+    virtual bool HandleKeyDownEvent(
+        FSlateApplication& SlateApp,
+        const FKeyEvent& InKeyEvent
+    ) override
+    {
+        if (
+            InKeyEvent.GetKey() == EKeys::Gamepad_FaceButton_Bottom
+            && !InKeyEvent.IsRepeat()
+            )
+        {
+            if (GameInstance.IsValid())
+            {
+                const FInputDeviceId InputDeviceId =
+                    InKeyEvent.GetInputDeviceId();
+
+                GameInstance->HandleJoinButtonPressed(InputDeviceId);
+            }
+        }
+
+        // Laisser les autres systèmes recevoir le bouton.
+        return false;
+    }
+
+private:
+
+    // --------------------------------------------------------
+    // 01.4 - RÉFÉRENCE SÉCURISÉE AU GAME INSTANCE
+    // --------------------------------------------------------
+
+    TWeakObjectPtr<USmashGameInstance> GameInstance;
+};
+
+// ============================================================================
 // 01 - GAME INSTANCE INITIALIZATION
 // ============================================================================
 
 void USmashGameInstance::Init()
 {
     Super::Init();
+
+    // 00 - CAPTER A/CROIX DES MANETTES NON ATTRIBUEES
+    if (FSlateApplication::IsInitialized())
+    {
+        JoinInputProcessor = MakeShared<FSmashJoinInputProcessor>(this);
+        FSlateApplication::Get().RegisterInputPreProcessor(JoinInputProcessor);
+    }
+
 
     // ========================================================================
     // LOCAL MULTIPLAYER - INPUT DEVICE CONNECTION EVENT
@@ -1113,279 +1196,123 @@ void USmashGameInstance::EndLoadingScreen(UWorld* LoadedWorld)
 // Pour l'instant, on affiche seulement les IDs pour vérifier
 // exactement ce qu'Unreal détecte.
 // ============================================================
+// ============================================================================
+// 16 - DECONNEXION / RECONNEXION : NE PAS CREER UN NOUVEAU JOUEUR
+// ============================================================================
 void USmashGameInstance::HandleInputDeviceConnectionChange(
-	EInputDeviceConnectionState NewConnectionState,
-	FPlatformUserId PlatformUserId,
-	FInputDeviceId InputDeviceId
-)
+    EInputDeviceConnectionState NewConnectionState,
+    FPlatformUserId PlatformUserId,
+    FInputDeviceId InputDeviceId)
 {
-	// ============================================================
-	// DEBUG - PÉRIPHÉRIQUE DÉTECTÉ
-	// ============================================================
+    for (FSmashLocalPlayerData& PlayerData : ConnectedPlayers)
+    {
+        if (PlayerData.InputDeviceId != InputDeviceId)
+        {
+            continue;
+        }
 
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("INPUT DEVICE EVENT | Device=%d | PlatformUser=%d | State=%d"),
-		InputDeviceId.GetId(),
-		PlatformUserId.GetInternalId(),
-		static_cast<int32>(NewConnectionState)
-	);
+        if (NewConnectionState == EInputDeviceConnectionState::Disconnected)
+        {
+            if (PlayerData.bIsConnected)
+            {
+                PlayerData.bIsConnected = false;
+                OnSmashLocalPlayerConnectionChanged(PlayerData.PlayerIndex, false);
+            }
+        }
+        else if (NewConnectionState == EInputDeviceConnectionState::Connected)
+        {
+            if (!PlayerData.bIsConnected)
+            {
+                // On restaure l'ancien emplacement, sans creer de LocalPlayer.
+                RouteInputDeviceToLocalPlayer(PlayerData.PlayerIndex, InputDeviceId);
+                PlayerData.bIsConnected = true;
+                OnSmashLocalPlayerConnectionChanged(PlayerData.PlayerIndex, true);
+            }
+        }
+        return;
+    }
 
+    // Manette inconnue : on attend A/Croix, meme si deja branchee.
+    UE_LOG(LogTemp, Log, TEXT("DEVICE SANS JOUEUR | Device=%d | State=%d"),
+        InputDeviceId.GetId(), static_cast<int32>(NewConnectionState));
+}
 
-	// ============================================================
-	// 01 - DÉCONNEXION D'UNE MANETTE
-	//
-	// On garde le LocalPlayer en vie.
-	// On marque seulement le joueur comme déconnecté
-	// et on prévient le Blueprint.
-	// ============================================================
+// ============================================================================
+// 17 - APPUYER SUR A / CROIX POUR REJOINDRE
+// ============================================================================
+void USmashGameInstance::HandleJoinButtonPressed(FInputDeviceId InputDeviceId)
+{
+    if (!InputDeviceId.IsValid())
+    {
+        return;
+    }
 
-	if (NewConnectionState == EInputDeviceConnectionState::Disconnected)
-	{
-		for (FSmashLocalPlayerData& PlayerData : ConnectedPlayers)
-		{
-			if (PlayerData.InputDeviceId == InputDeviceId)
-			{
-				// ------------------------------------------------
-				// JOUEUR DÉCONNECTÉ
-				// ------------------------------------------------
+    // Une manette connue ne doit jamais creer un second joueur.
+    for (const FSmashLocalPlayerData& PlayerData : ConnectedPlayers)
+    {
+        if (PlayerData.InputDeviceId == InputDeviceId)
+        {
+            return;
+        }
+    }
 
-				PlayerData.bIsConnected = false;
-                OnSmashLocalPlayerConnectionChanged(
-                    PlayerData.PlayerIndex,
-                    false
-                );
-               
-				// ------------------------------------------------
-				// DEBUG
-				// ------------------------------------------------
-
-				UE_LOG(
-					LogTemp,
-					Warning,
-					TEXT("MANETTE DECONNECTEE | Device=%d -> PlayerIndex=%d"),
-					InputDeviceId.GetId(),
-					PlayerData.PlayerIndex
-				);
-
-
-				// ------------------------------------------------
-				// PRÉVENIR LE BLUEPRINT
-				//
-				// false = déconnecté
-				// ------------------------------------------------
-
-				OnSmashLocalPlayerConnectionChanged(
-					PlayerData.PlayerIndex,
-					false
-				);
-
-
-				// ------------------------------------------------
-				// IMPORTANT
-				//
-				// On NE supprime PAS le LocalPlayer.
-				// ------------------------------------------------
-
-				return;
-			}
-		}
-
-
-		// --------------------------------------------------------
-		// DEVICE INCONNU
-		// --------------------------------------------------------
-
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("DECONNEXION DEVICE INCONNU | Device=%d"),
-			InputDeviceId.GetId()
-		);
-
-		return;
-	}
-
-
-	// ============================================================
-	// 02 - IGNORER LES AUTRES ÉTATS
-	//
-	// À partir d'ici, on veut seulement Connected.
-	// ============================================================
-
-	if (NewConnectionState != EInputDeviceConnectionState::Connected)
-	{
-		return;
-	}
-
-
-	// ============================================================
-	// 03 - RECONNEXION D'UNE MANETTE EXISTANTE
-	//
-	// Si le DeviceId existe déjà dans ConnectedPlayers,
-	// on récupère exactement le même joueur.
-	// ============================================================
-
-	for (FSmashLocalPlayerData& PlayerData : ConnectedPlayers)
-	{
-		if (PlayerData.InputDeviceId == InputDeviceId)
-		{
-			// ====================================================
-			// SI LE JOUEUR EST DÉJÀ CONNECTÉ
-			//
-			// Unreal peut envoyer plusieurs événements Connected
-			// pendant la connexion initiale.
-			//
-			// Ce n'est PAS une vraie reconnexion.
-			// ====================================================
-
-			if (PlayerData.bIsConnected)
-			{
-				RouteInputDeviceToLocalPlayer(
-					PlayerData.PlayerIndex,
-					InputDeviceId
-				);
-
-				UE_LOG(
-					LogTemp,
-					Warning,
-					TEXT("CONNECTED DUPLICATE | ROUTING REFRESH | Device=%d -> PlayerIndex=%d"),
-					InputDeviceId.GetId(),
-					PlayerData.PlayerIndex
-				);
-
-				return;
-			}
-
-			// ====================================================
-			// VRAIE RECONNEXION
-			// ====================================================
-
-            OnSmashLocalPlayerConnectionChanged(
-                PlayerData.PlayerIndex,
-                true
-            );
-
-
-			// ====================================================
-			// RÉAPPLIQUER LE ROUTAGE
-			// ====================================================
-
-			RouteInputDeviceToLocalPlayer(
-				PlayerData.PlayerIndex,
-				InputDeviceId
-			);
-
-
-			// ====================================================
-			// DEBUG
-			// ====================================================
-
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("MANETTE RECONNECTEE | Device=%d -> PlayerIndex=%d"),
-				InputDeviceId.GetId(),
-				PlayerData.PlayerIndex
-			);
-
-
-			// ====================================================
-			// PRÉVENIR LE BLUEPRINT
-			//
-			// Seulement lors d'une VRAIE reconnexion.
-			// ====================================================
-
-			OnSmashLocalPlayerConnectionChanged(
-				PlayerData.PlayerIndex,
-				true
-			);
-
-			return;
-		}
-	}
-
-
-	// ============================================================
-	// 04 - NOUVELLE MANETTE
-	//
-	// Cette manette n'existait pas encore.
-	//
-	// P1 = clavier
-	// P2 = index 1
-	// P3 = index 2
-	// P4 = index 3
-	// ============================================================
-
+    // P1-P4 utilisent tous une manette. P1 est le LocalPlayer deja cree par UE.
     const int32 NewPlayerIndex = ConnectedPlayers.Num();
+    if (NewPlayerIndex > 3)
+    {
+        return;
+    }
 
+    // Enregistrer AVANT la creation : les events Blueprint voient le joueur.
+    FSmashLocalPlayerData NewPlayer;
+    NewPlayer.PlayerIndex = NewPlayerIndex;
+    NewPlayer.InputDeviceId = InputDeviceId;
+    NewPlayer.bIsConnected = true;
+    ConnectedPlayers.Add(NewPlayer);
 
-	// ============================================================
-	// 05 - MAXIMUM 4 JOUEURS
-	// ============================================================
+    // P1 : reutiliser le LocalPlayer 0. P2-P4 : creer leur LocalPlayer.
+    // IMPORTANT : le chemin ExistingLocalPlayer retourne sans declencher
+    // OnSmashLocalPlayerCreated, donc on le declenche explicitement pour P1.
+    if (NewPlayerIndex == 0)
+    {
+        if (!GetLocalPlayerByIndex(0))
+        {
+            ConnectedPlayers.RemoveAt(ConnectedPlayers.Num() - 1);
+            UE_LOG(LogTemp, Error, TEXT("JOIN P1 ECHEC | LocalPlayer 0 absent"));
+            return;
+        }
+        RouteInputDeviceToLocalPlayer(0, InputDeviceId);
+        OnSmashLocalPlayerCreated(0);
+    }
+    else
+    {
+        CreateSmashLocalPlayer(NewPlayerIndex, InputDeviceId);
+    }
 
-	if (NewPlayerIndex > 3)
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("MANETTE IGNOREE | Maximum 4 joueurs | Device=%d"),
-			InputDeviceId.GetId()
-		);
+    // Annuler l'inscription si Unreal n'a pas cree le joueur.
+    if (!GetLocalPlayerByIndex(NewPlayerIndex))
+    {
+        ConnectedPlayers.RemoveAt(ConnectedPlayers.Num() - 1);
+        UE_LOG(LogTemp, Error, TEXT("JOIN ECHEC | Device=%d"), InputDeviceId.GetId());
+        return;
+    }
 
-		return;
-	}
+    OnSmashLocalPlayerConnectionChanged(NewPlayerIndex, true);
+    UE_LOG(LogTemp, Warning, TEXT("JOIN OK | Device=%d -> P%d"),
+        InputDeviceId.GetId(), NewPlayerIndex + 1);
+}
 
-
-	// ============================================================
-	// 06 - ENREGISTRER LA NOUVELLE MANETTE
-	// ============================================================
-
-	FSmashLocalPlayerData NewPlayer;
-
-	NewPlayer.PlayerIndex = NewPlayerIndex;
-	NewPlayer.InputDeviceId = InputDeviceId;
-	NewPlayer.bIsConnected = true;
-
-
-	// ============================================================
-	// IMPORTANT
-	//
-	// On enregistre le Device AVANT de créer le LocalPlayer.
-	// ============================================================
-
-	ConnectedPlayers.Add(NewPlayer);
-
-    OnSmashLocalPlayerConnectionChanged(
-        NewPlayerIndex,
-        true
-    );
-
-	// ============================================================
-	// 07 - CRÉER LE LOCAL PLAYER
-	//
-	// CreateSmashLocalPlayer() s'occupe également
-	// de notre routage Device -> LocalPlayer.
-	// ============================================================
-
-	CreateSmashLocalPlayer(
-		NewPlayerIndex,
-		InputDeviceId
-	);
-
-
-	// ============================================================
-	// 08 - DEBUG
-	// ============================================================
-
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("MANETTE ENREGISTREE | Device=%d -> PlayerIndex=%d"),
-		InputDeviceId.GetId(),
-		NewPlayerIndex
-	);
+// ============================================================================
+// 18 - NETTOYAGE DU PREPROCESSOR
+// ============================================================================
+void USmashGameInstance::Shutdown()
+{
+    if (JoinInputProcessor.IsValid() && FSlateApplication::IsInitialized())
+    {
+        FSlateApplication::Get().UnregisterInputPreProcessor(JoinInputProcessor);
+        JoinInputProcessor.Reset();
+    }
+    Super::Shutdown();
 }
 
 // ============================================================
@@ -1400,154 +1327,154 @@ void USmashGameInstance::HandleInputDeviceConnectionChange(
 // ============================================================
 
 void USmashGameInstance::CreateSmashLocalPlayer(
-	int32 PlayerIndex,
-	FInputDeviceId InputDeviceId
+    int32 PlayerIndex,
+    FInputDeviceId InputDeviceId
 )
 {
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("CREATE LOCAL PLAYER REQUEST | PlayerIndex=%d | Device=%d"),
-		PlayerIndex,
-		InputDeviceId.GetId()
-	);
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("CREATE LOCAL PLAYER REQUEST | PlayerIndex=%d | Device=%d"),
+        PlayerIndex,
+        InputDeviceId.GetId()
+    );
 
-	// ============================================================
-	// SÉCURITÉ - SI LE LOCAL PLAYER EXISTE DÉJÀ
-	// ============================================================
+    // ============================================================
+    // SÉCURITÉ - SI LE LOCAL PLAYER EXISTE DÉJÀ
+    // ============================================================
 
-	if (ULocalPlayer* ExistingLocalPlayer = GetLocalPlayerByIndex(PlayerIndex))
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("LOCAL PLAYER DEJA EXISTANT | PlayerIndex=%d | ControllerId=%d | PlatformUser=%d"),
-			PlayerIndex,
-			ExistingLocalPlayer->GetControllerId(),
-			ExistingLocalPlayer->GetPlatformUserId().GetInternalId()
-		);
+    if (ULocalPlayer* ExistingLocalPlayer = GetLocalPlayerByIndex(PlayerIndex))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("LOCAL PLAYER DEJA EXISTANT | PlayerIndex=%d | ControllerId=%d | PlatformUser=%d"),
+            PlayerIndex,
+            ExistingLocalPlayer->GetControllerId(),
+            ExistingLocalPlayer->GetPlatformUserId().GetInternalId()
+        );
 
-		RouteInputDeviceToLocalPlayer(
-			PlayerIndex,
-			InputDeviceId
-		);
+        RouteInputDeviceToLocalPlayer(
+            PlayerIndex,
+            InputDeviceId
+        );
 
-		return;
-	}
+        return;
+    }
 
-	// ============================================================
-	// DEBUG - P1
-	// ============================================================
+    // ============================================================
+    // DEBUG - P1
+    // ============================================================
 
-	if (ULocalPlayer* Player1 = GetLocalPlayerByIndex(0))
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("P1 INFO | ControllerId=%d | PlatformUser=%d"),
-			Player1->GetControllerId(),
-			Player1->GetPlatformUserId().GetInternalId()
-		);
-	}
+    if (ULocalPlayer* Player1 = GetLocalPlayerByIndex(0))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("P1 INFO | ControllerId=%d | PlatformUser=%d"),
+            Player1->GetControllerId(),
+            Player1->GetPlatformUserId().GetInternalId()
+        );
+    }
 
-	// ============================================================
-	// DEBUG - PROPRIÉTAIRE ACTUEL DE LA MANETTE
-	// ============================================================
+    // ============================================================
+    // DEBUG - PROPRIÉTAIRE ACTUEL DE LA MANETTE
+    // ============================================================
 
-	IPlatformInputDeviceMapper& DeviceMapper =
-		IPlatformInputDeviceMapper::Get();
+    IPlatformInputDeviceMapper& DeviceMapper =
+        IPlatformInputDeviceMapper::Get();
 
-	const FPlatformUserId DevicePlatformUser =
-		DeviceMapper.GetUserForInputDevice(InputDeviceId);
+    const FPlatformUserId DevicePlatformUser =
+        DeviceMapper.GetUserForInputDevice(InputDeviceId);
 
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("DEVICE BEFORE CREATE | Device=%d -> PlatformUser=%d"),
-		InputDeviceId.GetId(),
-		DevicePlatformUser.GetInternalId()
-	);
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("DEVICE BEFORE CREATE | Device=%d -> PlatformUser=%d"),
+        InputDeviceId.GetId(),
+        DevicePlatformUser.GetInternalId()
+    );
 
-	// ============================================================
-	// CRÉER LE LOCAL PLAYER PAR INDEX
-	//
-	// On conserve la version stable qui fonctionnait déjà :
-	// P2 = ControllerId 1
-	// P3 = ControllerId 2
-	// P4 = ControllerId 3
-	// ============================================================
+    // ============================================================
+    // CRÉER LE LOCAL PLAYER PAR INDEX
+    //
+    // On conserve la version stable qui fonctionnait déjà :
+    // P2 = ControllerId 1
+    // P3 = ControllerId 2
+    // P4 = ControllerId 3
+    // ============================================================
 
-	FString Error;
+    FString Error;
 
-	ULocalPlayer* NewLocalPlayer = CreateLocalPlayer(
-		PlayerIndex,
-		Error,
-		true
-	);
+    ULocalPlayer* NewLocalPlayer = CreateLocalPlayer(
+        PlayerIndex,
+        Error,
+        true
+    );
 
-	if (!NewLocalPlayer)
-	{
-		UE_LOG(
-			LogTemp,
-			Error,
-			TEXT("ECHEC LOCAL PLAYER | PlayerIndex=%d | Error=%s"),
-			PlayerIndex,
-			*Error
-		);
+    if (!NewLocalPlayer)
+    {
+        UE_LOG(
+            LogTemp,
+            Error,
+            TEXT("ECHEC LOCAL PLAYER | PlayerIndex=%d | Error=%s"),
+            PlayerIndex,
+            *Error
+        );
 
-		return;
-	}
+        return;
+    }
 
-	// ============================================================
-	// IMPORTANT - NE PAS FAIRE SetPlatformUserId()
-	//
-	// Le LocalPlayer garde le PlatformUser créé normalement par UE.
-	// On va plutôt associer la vraie manette à ce PlatformUser.
-	// ============================================================
+    // ============================================================
+    // IMPORTANT - NE PAS FAIRE SetPlatformUserId()
+    //
+    // Le LocalPlayer garde le PlatformUser créé normalement par UE.
+    // On va plutôt associer la vraie manette à ce PlatformUser.
+    // ============================================================
 
-	RouteInputDeviceToLocalPlayer(
-		PlayerIndex,
-		InputDeviceId
-	);
+    RouteInputDeviceToLocalPlayer(
+        PlayerIndex,
+        InputDeviceId
+    );
 
-	// ============================================================
-	// DEBUG - LOCAL PLAYER FINAL
-	// ============================================================
+    // ============================================================
+    // DEBUG - LOCAL PLAYER FINAL
+    // ============================================================
 
-	UE_LOG(
-		LogTemp,
-		Warning,
-		TEXT("LOCAL PLAYER CREE | PlayerIndex=%d | Device=%d | ControllerId=%d | PlatformUser=%d"),
-		PlayerIndex,
-		InputDeviceId.GetId(),
-		NewLocalPlayer->GetControllerId(),
-		NewLocalPlayer->GetPlatformUserId().GetInternalId()
-	);
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("LOCAL PLAYER CREE | PlayerIndex=%d | Device=%d | ControllerId=%d | PlatformUser=%d"),
+        PlayerIndex,
+        InputDeviceId.GetId(),
+        NewLocalPlayer->GetControllerId(),
+        NewLocalPlayer->GetPlatformUserId().GetInternalId()
+    );
 
-	// ============================================================
-	// DEBUG - TOUS LES LOCAL PLAYERS
-	// ============================================================
+    // ============================================================
+    // DEBUG - TOUS LES LOCAL PLAYERS
+    // ============================================================
 
-	for (int32 Index = 0; Index < GetNumLocalPlayers(); ++Index)
-	{
-		if (ULocalPlayer* LocalPlayer = GetLocalPlayerByIndex(Index))
-		{
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("PLAYER STATE | Index=%d | ControllerId=%d | PlatformUser=%d"),
-				Index,
-				LocalPlayer->GetControllerId(),
-				LocalPlayer->GetPlatformUserId().GetInternalId()
-			);
-		}
-	}
+    for (int32 Index = 0; Index < GetNumLocalPlayers(); ++Index)
+    {
+        if (ULocalPlayer* LocalPlayer = GetLocalPlayerByIndex(Index))
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("PLAYER STATE | Index=%d | ControllerId=%d | PlatformUser=%d"),
+                Index,
+                LocalPlayer->GetControllerId(),
+                LocalPlayer->GetPlatformUserId().GetInternalId()
+            );
+        }
+    }
 
-	// ============================================================
-	// PRÉVENIR LE BLUEPRINT
-	// ============================================================
+    // ============================================================
+    // PRÉVENIR LE BLUEPRINT
+    // ============================================================
 
-	OnSmashLocalPlayerCreated(PlayerIndex);
+    OnSmashLocalPlayerCreated(PlayerIndex);
 }
 
 
@@ -1572,93 +1499,110 @@ void USmashGameInstance::CreateSmashLocalPlayer(
 // ============================================================
 
 void USmashGameInstance::RouteInputDeviceToLocalPlayer(
-	int32 PlayerIndex,
-	FInputDeviceId InputDeviceId
+    int32 PlayerIndex,
+    FInputDeviceId InputDeviceId
 )
 {
-	ULocalPlayer* TargetLocalPlayer =
-		GetLocalPlayerByIndex(PlayerIndex);
+    ULocalPlayer* TargetLocalPlayer =
+        GetLocalPlayerByIndex(PlayerIndex);
 
-	if (!TargetLocalPlayer)
-	{
-		UE_LOG(
-			LogTemp,
-			Error,
-			TEXT("ROUTING FAILED | LocalPlayer invalide | PlayerIndex=%d | Device=%d"),
-			PlayerIndex,
-			InputDeviceId.GetId()
-		);
+    if (!TargetLocalPlayer)
+    {
+        UE_LOG(
+            LogTemp,
+            Error,
+            TEXT("ROUTING FAILED | LocalPlayer invalide | PlayerIndex=%d | Device=%d"),
+            PlayerIndex,
+            InputDeviceId.GetId()
+        );
 
-		return;
-	}
+        return;
+    }
 
-	IPlatformInputDeviceMapper& DeviceMapper =
-		IPlatformInputDeviceMapper::Get();
+    IPlatformInputDeviceMapper& DeviceMapper =
+        IPlatformInputDeviceMapper::Get();
 
-	const FPlatformUserId CurrentUser =
-		DeviceMapper.GetUserForInputDevice(InputDeviceId);
+    const FPlatformUserId CurrentUser =
+        DeviceMapper.GetUserForInputDevice(InputDeviceId);
 
-	const FPlatformUserId TargetUser =
-		TargetLocalPlayer->GetPlatformUserId();
+    const FPlatformUserId TargetUser =
+        TargetLocalPlayer->GetPlatformUserId();
 
-	// Déjà parfaitement routé.
-	if (CurrentUser == TargetUser)
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("ROUTING OK | Device=%d -> PlayerIndex=%d | PlatformUser=%d"),
-			InputDeviceId.GetId(),
-			PlayerIndex,
-			TargetUser.GetInternalId()
-		);
+    // Déjà parfaitement routé.
+    if (CurrentUser == TargetUser)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("ROUTING OK | Device=%d -> PlayerIndex=%d | PlatformUser=%d"),
+            InputDeviceId.GetId(),
+            PlayerIndex,
+            TargetUser.GetInternalId()
+        );
 
-		return;
-	}
+        return;
+    }
 
-	// ============================================================
-	// CHANGER LE PROPRIÉTAIRE DE LA MANETTE
-	//
-	// Cette fonction déclenche un PairingChange et non un nouvel
-	// événement de connexion, donc elle ne doit pas créer P3/P4
-	// accidentellement dans HandleInputDeviceConnectionChange().
-	// ============================================================
+    // ============================================================
+    // CHANGER LE PROPRIÉTAIRE DE LA MANETTE
+    //
+    // Cette fonction déclenche un PairingChange et non un nouvel
+    // événement de connexion, donc elle ne doit pas créer P3/P4
+    // accidentellement dans HandleInputDeviceConnectionChange().
+    // ============================================================
 
-	const bool bChanged =
-		DeviceMapper.Internal_ChangeInputDeviceUserMapping(
-			InputDeviceId,
-			TargetUser,
-			CurrentUser
-		);
+    const bool bChanged =
+        DeviceMapper.Internal_ChangeInputDeviceUserMapping(
+            InputDeviceId,
+            TargetUser,
+            CurrentUser
+        );
 
-	if (bChanged)
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("ROUTING CHANGED | Device=%d | User %d -> %d | PlayerIndex=%d"),
-			InputDeviceId.GetId(),
-			CurrentUser.GetInternalId(),
-			TargetUser.GetInternalId(),
-			PlayerIndex
-		);
-	}
-	else
-	{
-		UE_LOG(
-			LogTemp,
-			Error,
-			TEXT("ROUTING CHANGE FAILED | Device=%d | User %d -> %d | PlayerIndex=%d"),
-			InputDeviceId.GetId(),
-			CurrentUser.GetInternalId(),
-			TargetUser.GetInternalId(),
-			PlayerIndex
-		);
-	}
+    if (bChanged)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("ROUTING CHANGED | Device=%d | User %d -> %d | PlayerIndex=%d"),
+            InputDeviceId.GetId(),
+            CurrentUser.GetInternalId(),
+            TargetUser.GetInternalId(),
+            PlayerIndex
+        );
+    }
+    else
+    {
+        UE_LOG(
+            LogTemp,
+            Error,
+            TEXT("ROUTING CHANGE FAILED | Device=%d | User %d -> %d | PlayerIndex=%d"),
+            InputDeviceId.GetId(),
+            CurrentUser.GetInternalId(),
+            TargetUser.GetInternalId(),
+            PlayerIndex
+        );
+    }
 }
 
 
+// ========================================================
+// SELECTION - RECUPERER LES JOUEURS DEJA CONNECTES
+// ========================================================
 
+TArray<int32> USmashGameInstance::GetConnectedPlayerIndices() const
+{
+    TArray<int32> Result;
+
+    for (const FSmashLocalPlayerData& Player : ConnectedPlayers)
+    {
+        if (Player.bIsConnected)
+        {
+            Result.Add(Player.PlayerIndex);
+        }
+    }
+
+    return Result;
+}
 
 
 
